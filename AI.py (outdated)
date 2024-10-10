@@ -1,0 +1,116 @@
+import os
+import time
+import pandas as pd
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import joblib  # To save the trained models
+
+# Base data path
+BASE_DATA_PATH = 'osrs_ge_history'
+MODEL_DIR = 'item_models'
+
+# Ensure the model directory exists
+if not os.path.exists(MODEL_DIR):
+    os.makedirs(MODEL_DIR)
+
+# Function to check if the file exists and is not empty
+def is_file_valid(filepath):
+    if not os.path.exists(filepath):
+        print(f"File does not exist: {filepath}")
+        return False
+    elif os.path.getsize(filepath) == 0:
+        print(f"File is empty: {filepath}")
+        return False
+    return True
+
+def train_model(item_id):
+    # Define the path for the item's data file
+    item_file = os.path.join(BASE_DATA_PATH, str(item_id), f'osrs_ge_history_{item_id}.csv')
+    
+    if not is_file_valid(item_file):
+        print(f"Data file is invalid or empty: {item_file}. Skipping training for Item ID {item_id}.")
+        return
+
+    try:
+        df = pd.read_csv(item_file)
+    except pd.errors.EmptyDataError:
+        print(f"No data found in {item_file}. Skipping training for Item ID {item_id}.")
+        return
+    except Exception as e:
+        print(f"Error reading {item_file}: {e}. Skipping training for Item ID {item_id}.")
+        return
+
+    # Check if we have enough data to train the model
+    if df.shape[0] < 2:
+        print(f"Not enough data for Item ID {item_id}. Skipping...")
+        return
+
+    # Feature Engineering: Calculate Price Change and Margin
+    df['Price_Change'] = df['High Price'].diff()
+    df['Margin'] = df['High Price'] - df['Low Price']
+
+    # Drop NaN values
+    df.dropna(inplace=True)
+
+    # Check if we have valid data after dropping NaNs
+    if df.shape[0] < 2:
+        print(f"Not enough valid data after processing for Item ID {item_id}. Skipping...")
+        return
+
+    # Use 'High Price', 'Low Price', and 'Margin' as features
+    X = df[['High Price', 'Low Price', 'Margin']]
+    y = df['Price_Change']  # Target variable: Price change
+
+    # Check if we have enough samples to split
+    if len(X) < 2:
+        print(f"Not enough samples to train model for Item ID {item_id}. Skipping...")
+        return
+
+    # Splitting the data for training and testing
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Check if the train set is empty
+    if len(X_train) == 0:
+        print(f"Training set is empty for Item ID {item_id}. Skipping...")
+        return
+
+    # Initialize and train a regression model
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+
+    # Make predictions and evaluate performance
+    y_pred = model.predict(X_test)
+    mse = mean_squared_error(y_test, y_pred)
+    print(f"Item ID {item_id} - Mean Squared Error: {mse}")
+
+    # Save the trained model
+    model_filename = os.path.join(MODEL_DIR, f'model_item_{item_id}.pkl')
+    joblib.dump(model, model_filename)
+    print(f"Model for Item ID {item_id} saved as {model_filename}.")
+
+def monitor_data():
+    item_ids = []  # To keep track of unique item IDs
+
+    # Get all item IDs from existing data files
+    for item_dir in os.listdir(BASE_DATA_PATH):
+        item_path = os.path.join(BASE_DATA_PATH, item_dir)
+        if os.path.isdir(item_path):  # Ensure it is a directory
+            item_ids.append(item_dir)  # Append the Item ID
+
+    last_modified = {item_id: 0 for item_id in item_ids}  # Track last modified times for each item
+
+    while True:
+        time.sleep(10)  # Check every 10 seconds (adjust as needed)
+
+        for item_id in item_ids:
+            item_file = os.path.join(BASE_DATA_PATH, str(item_id), f'osrs_ge_history_{item_id}.csv')
+            current_modified = os.path.getmtime(item_file)
+
+            if current_modified != last_modified[item_id]:  # If the file has changed
+                print(f"Data file for Item ID {item_id} updated. Retraining model...")
+                train_model(item_id)
+                last_modified[item_id] = current_modified  # Update the last modified time
+
+if __name__ == "__main__":
+    monitor_data()
